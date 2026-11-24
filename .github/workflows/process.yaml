@@ -1,8 +1,6 @@
 name: Process
 on:
-  schedule:
-    - cron: "05 03 * * *"
-    - cron: "05 11 * * *"
+  # Scheduled aggregation runs on InstaBox via aggregator-tomcat.
   workflow_dispatch:
 
 env:

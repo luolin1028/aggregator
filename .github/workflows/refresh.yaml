@@ -1,8 +1,6 @@
 name: Refresh
 on:
-  # performed every two hours
-  schedule:
-    - cron: "0 */2 * * *"
+  # Scheduled aggregation runs on InstaBox via aggregator-tomcat.
   workflow_dispatch:
 
 concurrency:
