@@ -9,6 +9,7 @@ InstaBox ``/data`` volume) so that consecutive runs can skip work:
 * ``domains`` - airport domains whose registration failed, to be skipped
 * ``dns``     - host name -> resolved IPv4 + timestamp
 * ``uploads`` - storage key -> content hash, to skip unchanged uploads
+* ``history`` - group -> last verified proxy list, merged into the next run
 
 The cache is best-effort: when the directory is not writable every method
 silently degrades to a no-op so that normal runs are never broken.
@@ -31,6 +32,9 @@ CACHE_DISABLE_ENV = "AGGREGATOR_CACHE_DISABLE"
 NODE_TTL = 24 * 60 * 60
 DNS_TTL = 6 * 60 * 60
 DOMAIN_TTL = 7 * 24 * 60 * 60
+
+# 历史节点列表上限，避免缓存文件无限增长
+MAX_HISTORY = 3000
 
 _REPO_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
@@ -87,7 +91,7 @@ class PersistentCache:
 
     # ------------------------------------------------------------------ io
     def _empty(self) -> dict:
-        return {"version": _VERSION, "nodes": {}, "domains": {}, "dns": {}, "uploads": {}}
+        return {"version": _VERSION, "nodes": {}, "domains": {}, "dns": {}, "uploads": {}, "history": {}}
 
     def _load(self) -> dict:
         if self._data is not None:
@@ -102,7 +106,7 @@ class PersistentCache:
                 with open(self.path, "r", encoding="utf-8") as handle:
                     loaded = json.load(handle)
                 if isinstance(loaded, dict):
-                    for key in ("nodes", "domains", "dns", "uploads"):
+                    for key in ("nodes", "domains", "dns", "uploads", "history"):
                         value = loaded.get(key)
                         if isinstance(value, dict):
                             self._data[key] = value
@@ -224,6 +228,25 @@ class PersistentCache:
         digest = content_digest(content)
         with self._lock:
             self._load()["uploads"][key] = [digest, float(timestamp or time.time())]
+
+    # ------------------------------------------------------------- history
+    def get_history(self, group: str = "collect") -> list[dict]:
+        key = (group or "collect").strip()
+        with self._lock:
+            items = self._load()["history"].get(key)
+        if not isinstance(items, list):
+            return []
+        return [dict(item) for item in items if isinstance(item, dict) and item.get("type") and item.get("server")]
+
+    def set_history(self, proxies: list[dict], group: str = "collect") -> None:
+        key = (group or "collect").strip()
+        cleaned = []
+        for item in proxies or []:
+            if not isinstance(item, dict) or not item.get("type") or not item.get("server"):
+                continue
+            cleaned.append({k: v for k, v in item.items() if k != "liveness"})
+        with self._lock:
+            self._load()["history"][key] = cleaned[-MAX_HISTORY:]
 
     # --------------------------------------------------------------- misc
     def purge(self, node_ttl: int | None = None, dns_ttl: int = DNS_TTL, domain_ttl: int = DOMAIN_TTL) -> None:

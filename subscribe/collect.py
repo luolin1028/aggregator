@@ -207,6 +207,44 @@ def assign(
     return tasks
 
 
+def load_previous_nodes() -> list[dict]:
+    """加载上次运行的有效节点：优先持久缓存，缓存缺失时回退到本地旧输出文件。"""
+    def ensure_names(items: list[dict]) -> list[dict]:
+        for item in items:
+            if not item.get("name"):
+                item["name"] = f'{item.get("type", "proxy")}-{item.get("server")}-{item.get("port", "")}'
+        return items
+
+    history = get_cache().get_history()
+    if history:
+        logger.info(f"loaded {len(history)} previous node(s) from history cache")
+        return ensure_names(history)
+
+    nodes = []
+    if os.path.isdir(DATA_BASE):
+        for name in sorted(os.listdir(DATA_BASE)):
+            if not name.lower().endswith((".yaml", ".yml")):
+                continue
+            try:
+                with open(os.path.join(DATA_BASE, name), "r", encoding="utf8") as handle:
+                    data = yaml.safe_load(handle) or {}
+            except Exception as exc:
+                logger.warning(f"cannot parse previous output file {name}: {exc}")
+                continue
+
+            items = data.get("proxies") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                continue
+            nodes.extend(
+                item for item in items if isinstance(item, dict) and item.get("type") and item.get("server")
+            )
+
+    nodes = ensure_names(nodes)
+    if nodes:
+        logger.info(f"loaded {len(nodes)} previous node(s) from local output files")
+    return nodes
+
+
 def aggregate(args: argparse.Namespace) -> None:
     def parse_gist_link(link: str) -> tuple[str, str]:
         # 提取 gist 用户名及 id
@@ -245,8 +283,11 @@ def aggregate(args: argparse.Namespace) -> None:
     )
 
     if not tasks:
-        logger.error("cannot found any valid config, exit")
-        sys.exit(0)
+        if args.merge_history and not args.skip:
+            logger.warning("cannot found any subscription, will try to reuse previous nodes")
+        else:
+            logger.error("cannot found any valid config, exit")
+            sys.exit(0)
 
     # 已有订阅已经做过过期检查，无需再测
     old_subscriptions = set()
@@ -270,6 +311,15 @@ def aggregate(args: argparse.Namespace) -> None:
     state.flush()
 
     proxies = list(itertools.chain.from_iterable([x[1] for x in results if x]))
+
+    # 合并上次运行的有效节点，避免本次抓取不足时输出骤减
+    if args.merge_history and not args.skip:
+        previous = load_previous_nodes()
+        if previous:
+            proxies = list(proxies) + previous
+            logger.info(f"merge previous nodes finished, total: {len(proxies)} before dedupe")
+    elif args.merge_history and args.skip:
+        logger.info("skip merging previous nodes because liveness check is disabled")
 
     if len(proxies) == 0:
         logger.error("exit because cannot fetch any proxy node")
@@ -339,6 +389,10 @@ def aggregate(args: argparse.Namespace) -> None:
         if len(nodes) <= 0:
             logger.error(f"cannot fetch any proxy")
             sys.exit(0)
+
+        # 记录本次验证有效的节点，供下次运行合并复用
+        state.set_history(nodes)
+        state.flush()
 
     subscriptions = set()
     for p in proxies:
@@ -664,6 +718,13 @@ if __name__ == "__main__":
         required=False,
         default=utils.env_int("BREAKER_THRESHOLD", 8),
         help="consecutive TCP failures before a source is skipped",
+    )
+
+    parser.add_argument(
+        "--merge-history",
+        action=argparse.BooleanOptionalAction,
+        default=utils.env_bool("MERGE_HISTORY", True),
+        help="merge previously verified nodes from cache/old output files (enabled by default)",
     )
 
     parser.add_argument(

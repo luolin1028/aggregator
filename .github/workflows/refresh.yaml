@@ -34,6 +34,7 @@ env:
   PROBE_TIMEOUT: ${{ vars.PROBE_TIMEOUT }}
   BREAKER_THRESHOLD: ${{ vars.BREAKER_THRESHOLD }}
   TELEGRAM_PAGES: ${{ vars.TELEGRAM_PAGES }}
+  MERGE_HISTORY: ${{ vars.MERGE_HISTORY }}
 
   # persistent incremental cache directory (use a persisted volume on your runner)
   AGGREGATOR_CACHE_DIR: ${{ vars.AGGREGATOR_CACHE_DIR }}
