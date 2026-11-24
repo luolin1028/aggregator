@@ -134,7 +134,16 @@ def precheck(
         if not isinstance(proxy, dict) or not server:
             tasks.append((None, 0, ""))
             continue
-        target = server if is_ip(server) else resolved.get(server.lower(), server)
+        if is_ip(server):
+            target = server
+        else:
+            target = resolved.get(server.lower(), "")
+            if not target:
+                # Unresolvable host: fail fast. Passing the name to
+                # create_connection would trigger a second, unbounded
+                # getaddrinfo call that ignores the socket timeout.
+                tasks.append((None, 0, utils.trim(str(proxy.get("sub", "")))))
+                continue
         tasks.append((target, proxy.get("port", 0), utils.trim(str(proxy.get("sub", "")))))
 
     locker = threading.Lock()
