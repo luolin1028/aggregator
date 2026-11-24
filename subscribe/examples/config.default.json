@@ -1,5 +1,6 @@
 {
-   "sites": [
+    "enable_register": false,
+    "sites": [
        {
             "name": "",
             "subscribe": [],

@@ -93,6 +93,7 @@ graph LR
 **process.py 配置**：
 ```json
 {
+    "enable_register": false,
     "sites": [
         {
             "name": "example-airport",
@@ -137,7 +138,7 @@ export PUSH_TOKEN=your_github_token
 ### 常用命令
 
 ```bash
-# 快速收集（推荐新手）
+# 快速收集（推荐新手，默认不注册新账号，仅使用已有订阅）
 python subscribe/collect.py -g username/gist-id -k token
 
 # 完整处理（推荐进阶）
@@ -149,6 +150,38 @@ python subscribe/process.py -s config.json --check
 # 高性能模式
 python subscribe/process.py -s config.json -n 128
 ```
+
+### ⚡ 性能与增量缓存
+
+`collect.py` 默认**关闭机场自动注册**（机房出口 IP 下注册成功率极低、耗时占比最高），
+仅抓取并解析已有订阅；如需启用：
+
+```bash
+# 命令行开启（也可在 process.py 的 JSON 配置中设置 "enable_register": true）
+python subscribe/collect.py --enable-register ...
+
+# 或通过环境变量
+export ENABLE_REGISTER=true
+```
+
+验证与抓取相关参数：
+
+| 参数 / 环境变量                     | 默认值 | 说明                                             |
+| ----------------------------------- | ------ | ------------------------------------------------ |
+| `-n` / `NUM_THREADS`                | 128    | 验证并发线程数                                   |
+| `--probe-timeout` / `PROBE_TIMEOUT` | 2.0    | TCP 预检超时（秒），死节点在此层直接淘汰         |
+| `--timeout` / `CHECK_TIMEOUT`       | 5000   | 完整协议验证单节点超时（毫秒）                   |
+| `--breaker` / `BREAKER_THRESHOLD`   | 8      | 某数据源连续失败节点数达到阈值后跳过该源         |
+| `-p` / `TELEGRAM_PAGES`             | 20     | Telegram 最大抓取页数，降低全量爬取耗时          |
+
+增量缓存默认写入持久盘（优先 `/data/aggregator-cache`，否则 `data/cache`），记录节点验证结果、
+死节点/失败机场域名黑名单、DNS 解析结果与上传内容 hash，第二次运行只处理新增节点，内容未变化时跳过上传：
+
+| 环境变量                   | 默认值              | 说明                                     |
+| -------------------------- | ------------------- | ---------------------------------------- |
+| `AGGREGATOR_CACHE_DIR`     | `/data/aggregator-cache` | 缓存目录（不存在时回退 `data/cache`） |
+| `AGGREGATOR_CACHE_TTL`     | `24`                | 节点验证结果复用时长（小时）             |
+| `AGGREGATOR_CACHE_DISABLE` | `false`             | 设为 `true` 可完全禁用缓存               |
 
 
 ## 📚 相关文档

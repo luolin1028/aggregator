@@ -5,10 +5,12 @@ import random
 import subprocess
 import time
 
+import probe
 import utils
 import workflow
 import yaml
 from airport import AirPort
+from cache import get_cache
 from config.models import GroupConfig, NodeInput, SiteConfig
 from logger import logger
 from origin import Origin
@@ -156,6 +158,9 @@ def check_alive_proxies(
     display: bool = True,
     skip: bool = False,
     group: str = "",
+    probe_timeout: float = 2.0,
+    breaker: int = 8,
+    cache_enabled: bool = True,
 ) -> list[dict[str, object]]:
     if not proxies:
         return []
@@ -168,14 +173,33 @@ def check_alive_proxies(
     if not checks:
         return nochecks
 
+    # 增量缓存 + TCP 预检：近期验证过的节点直接复用结果，死节点在第一层淘汰
+    if cache_enabled:
+        cached_alive, candidates = probe.screen(
+            checks,
+            num_threads=num_threads,
+            timeout=probe_timeout,
+            breaker=breaker,
+            display=display,
+        )
+    else:
+        cached_alive, candidates = [], list(checks)
+
+    if not candidates:
+        nochecks.extend(cached_alive)
+        logger.info(f"proxies check finished, used {len(cached_alive)} cached alive proxies, no full check needed")
+        return nochecks
+
     binpath = os.path.join(workspace, clash_bin)
     utils.chmod(binpath)
     logger.info(f"startup clash now, workspace: {workspace}, config: {filename}")
     process = subprocess.Popen([binpath, "-d", workspace, "-f", os.path.join(workspace, filename)])
-    logger.info(f"clash start success, begin check proxies, group: {group}\tcount: {len(checks)}")
+    logger.info(f"clash start success, begin check proxies, group: {group}\tcount: {len(candidates)}")
     time.sleep(random.randint(5, 8))
     params = [
-        [item, clash.EXTERNAL_CONTROLLER, timeout, test_url, delay, False] for item in checks if isinstance(item, dict)
+        [item, clash.EXTERNAL_CONTROLLER, timeout, test_url, delay, False]
+        for item in candidates
+        if isinstance(item, dict)
     ]
     masks = utils.multi_thread_run(func=clash.check, tasks=params, num_threads=num_threads, show_progress=display)
     try:
@@ -183,10 +207,16 @@ def check_alive_proxies(
     except Exception:
         logger.error(f"terminate clash process error, group: {group}")
 
-    availables = [checks[i] for i in range(len(checks)) if masks[i]]
+    if cache_enabled:
+        probe.record(candidates, masks)
+        get_cache().flush()
+
+    availables = [candidates[i] for i in range(len(candidates)) if masks[i]]
+    nochecks.extend(cached_alive)
     nochecks.extend(availables)
     logger.info(
-        f"proxies check finished, total: {len(checks)}, alive: {len(availables)}, dead: {len(checks) - len(availables)}"
+        f"proxies check finished, total: {len(checks)}, alive: {len(availables) + len(cached_alive)}, "
+        f"cached: {len(cached_alive)}, dead: {len(checks) - len(availables) - len(cached_alive)}"
     )
     return nochecks
 

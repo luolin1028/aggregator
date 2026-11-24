@@ -15,11 +15,13 @@ import time
 
 import executable
 import pipeline
+import probe
 import push
 import utils
 import workflow
 import yaml
 from airport import AirPort
+from cache import get_cache
 from config.models import NodeInput, SiteConfig, StorageItem
 from crawl.helpers import check_status, naming_task
 from discovery import AirportRecord, collect_airport, parse_records, save_records
@@ -39,10 +41,11 @@ def assign(
     bin_name: str,
     domains_file: str = "",
     overwrite: bool = False,
-    pages: int = sys.maxsize,
+    pages: int = 20,
     allow_gmail_alias: bool = False,
     display: bool = True,
     num_threads: int = 0,
+    enable_register: bool = False,
     **kwargs: object,
 ) -> list[TaskConfig]:
     def load_exist(username: str, gist_id: str, access_token: str, filename: str) -> list[str]:
@@ -114,6 +117,10 @@ def assign(
         logger.info("skip registering new accounts, will use existing subscriptions for refreshing")
         return tasks
 
+    if not enable_register:
+        logger.info("airport auto-registration is disabled, only existing subscriptions will be used")
+        return tasks
+
     records: dict[str, AirportRecord] = {}
     delimiter = "@#@#"
     domains_file = utils.trim(domains_file)
@@ -167,6 +174,14 @@ def assign(
     if overwrite:
         save_records(records=records, filepath=fullpath, delimiter=delimiter, full=True)
 
+    # 跳过历史注册失败的机场域名，避免重复浪费时间
+    state = get_cache()
+    available = {domain: record for domain, record in records.items() if not state.is_bad_domain(domain)}
+    skipped = len(records) - len(available)
+    if skipped > 0:
+        logger.info(f"skip {skipped} airport domain(s) found in the failure blacklist")
+    records = available
+
     sites = []
     for domain, record in records.items():
         name = naming_task(url=domain)
@@ -205,6 +220,8 @@ def aggregate(args: argparse.Namespace) -> None:
     clash_bin, subconverter_bin = executable.which_bin()
     display = not args.invisible
 
+    get_cache().purge()
+
     subscribes_file = "subscribes.txt"
     access_token = utils.trim(args.key)
     username, gist_id = parse_gist_link(args.gist)
@@ -217,6 +234,7 @@ def aggregate(args: argparse.Namespace) -> None:
         allow_gmail_alias=args.easygoing,
         display=display,
         num_threads=args.num,
+        enable_register=args.enable_register,
         refresh=args.refresh,
         skip_captcha=args.skip_captcha,
         username=username,
@@ -241,6 +259,16 @@ def aggregate(args: argparse.Namespace) -> None:
         os.remove(generate_conf)
 
     results = pipeline.execute_tasks(tasks)
+
+    # 注册失败/无免费套餐/解析不到节点的机场域名记入黑名单，下次直接跳过
+    state = get_cache()
+    for task, result in zip(tasks, results):
+        if not task.domain or task.renew:
+            continue
+        if not task.nodes.subscribe_list() and (not result or not result[1]):
+            state.mark_bad_domain(task.domain)
+    state.flush()
+
     proxies = list(itertools.chain.from_iterable([x[1] for x in results if x]))
 
     if len(proxies) == 0:
@@ -256,40 +284,58 @@ def aggregate(args: argparse.Namespace) -> None:
         confif_file = "config.yaml"
         proxies = clash.generate_config(workspace, list(proxies), confif_file)
 
-        # 可执行权限
-        utils.chmod(binpath)
-
-        logger.info(f"startup clash now, workspace: {workspace}, config: {confif_file}")
-        process = subprocess.Popen(
-            [
-                binpath,
-                "-d",
-                workspace,
-                "-f",
-                os.path.join(workspace, confif_file),
-            ]
-        )
-        logger.info(f"clash start success, begin check proxies, num: {len(proxies)}")
-
-        time.sleep(random.randint(3, 6))
-        params = [
-            [p, clash.EXTERNAL_CONTROLLER, 5000, args.url, args.delay, False] for p in proxies if isinstance(p, dict)
-        ]
-
-        masks = utils.multi_thread_run(
-            func=clash.check,
-            tasks=params,
+        # 增量缓存 + TCP 预检：死节点在第一层淘汰，近期验证过的节点直接复用
+        cached_alive, candidates = probe.screen(
+            proxies,
             num_threads=args.num,
-            show_progress=display,
+            timeout=args.probe_timeout,
+            breaker=args.breaker,
+            display=display,
         )
 
-        # 关闭clash
-        try:
-            process.terminate()
-        except:
-            logger.error(f"terminate clash process error")
+        if candidates:
+            # 可执行权限
+            utils.chmod(binpath)
 
-        nodes = [proxies[i] for i in range(len(proxies)) if masks[i]]
+            logger.info(f"startup clash now, workspace: {workspace}, config: {confif_file}")
+            process = subprocess.Popen(
+                [
+                    binpath,
+                    "-d",
+                    workspace,
+                    "-f",
+                    os.path.join(workspace, confif_file),
+                ]
+            )
+            logger.info(f"clash start success, begin check proxies, num: {len(candidates)}")
+
+            time.sleep(random.randint(3, 6))
+            params = [
+                [p, clash.EXTERNAL_CONTROLLER, args.timeout, args.url, args.delay, False]
+                for p in candidates
+                if isinstance(p, dict)
+            ]
+
+            masks = utils.multi_thread_run(
+                func=clash.check,
+                tasks=params,
+                num_threads=args.num,
+                show_progress=display,
+            )
+
+            # 关闭clash
+            try:
+                process.terminate()
+            except:
+                logger.error(f"terminate clash process error")
+
+            probe.record(candidates, masks)
+            state.flush()
+
+            nodes = list(cached_alive) + [candidates[i] for i in range(len(candidates)) if masks[i]]
+        else:
+            nodes = list(cached_alive)
+
         if len(nodes) <= 0:
             logger.error(f"cannot fetch any proxy")
             sys.exit(0)
@@ -397,12 +443,17 @@ def aggregate(args: argparse.Namespace) -> None:
         if files:
             push_client = push.PushToGist(token=access_token)
 
-            # 上传
-            success = push_client.push_to(content="", item=item, payload={"files": files}, group="collect")
-            if success:
-                logger.info(f"upload proxies and subscriptions to gist successed")
+            if state.upload_unchanged("collect-gist", files):
+                logger.info("generated content is unchanged, skip uploading to gist")
             else:
-                logger.error(f"upload proxies and subscriptions to gist failed")
+                # 上传
+                success = push_client.push_to(content="", item=item, payload={"files": files}, group="collect")
+                if success:
+                    state.remember_upload("collect-gist", files)
+                    state.flush()
+                    logger.info(f"upload proxies and subscriptions to gist successed")
+                else:
+                    logger.error(f"upload proxies and subscriptions to gist failed")
 
     # 清理工作空间
     workflow.cleanup(workspace, [])
@@ -526,7 +577,7 @@ if __name__ == "__main__":
         "--num",
         type=int,
         required=False,
-        default=64,
+        default=utils.env_int("NUM_THREADS", 128),
         help="threads num for check proxy",
     )
 
@@ -544,7 +595,7 @@ if __name__ == "__main__":
         "--pages",
         type=int,
         required=False,
-        default=sys.maxsize,
+        default=utils.env_int("TELEGRAM_PAGES", 20),
         help="max page number when crawling telegram",
     )
 
@@ -582,6 +633,37 @@ if __name__ == "__main__":
         required=False,
         default="https://www.google.com/generate_204",
         help="test url",
+    )
+
+    parser.add_argument(
+        "--enable-register",
+        action=argparse.BooleanOptionalAction,
+        default=utils.env_bool("ENABLE_REGISTER", False),
+        help="enable airport auto-registration (disabled by default, only existing subscriptions are used)",
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        required=False,
+        default=utils.env_int("CHECK_TIMEOUT", 5000),
+        help="per-node full check timeout in milliseconds",
+    )
+
+    parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        required=False,
+        default=utils.env_float("PROBE_TIMEOUT", 2.0),
+        help="tcp pre-check timeout in seconds",
+    )
+
+    parser.add_argument(
+        "--breaker",
+        type=int,
+        required=False,
+        default=utils.env_int("BREAKER_THRESHOLD", 8),
+        help="consecutive TCP failures before a source is skipped",
     )
 
     parser.add_argument(

@@ -134,3 +134,5 @@ config.yaml
 generate.ini
 config.json
 config.local.json
+# persistent incremental cache
+/data/cache/

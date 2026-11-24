@@ -1006,6 +1006,7 @@ class ProcessConfig:
     update: UpdateConfig = field(default_factory=UpdateConfig)
     delay: int = 5000
     crawl: CrawlConfig | None = None
+    enable_register: bool = False
 
     @classmethod
     def parse(cls, data: dict[str, object]) -> ProcessConfig:
@@ -1030,6 +1031,7 @@ class ProcessConfig:
             update=UpdateConfig.parse(obj.field("update")),
             delay=obj.integer("delay", default=5000, minimum=50) or 5000,
             crawl=CrawlConfig.parse(obj.field("crawl"), storage),
+            enable_register=bool(obj.boolean("enable_register", default=False)),
         )
 
     def verify(self, pushtool: PushTo | None) -> None:
@@ -1050,6 +1052,7 @@ class ProcessConfig:
             "storage": self.storage.to_dict(),
             "update": self.update.to_dict(),
             "delay": self.delay,
+            "enable_register": self.enable_register,
         }
         if self.crawl is not None:
             payload["crawl"] = self.crawl.to_dict()

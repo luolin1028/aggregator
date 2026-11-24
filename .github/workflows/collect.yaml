@@ -26,6 +26,18 @@ env:
   # include special protocols, such as vless hysteria2 and hysteria
   ENABLE_SPECIAL_PROTOCOLS: ${{ vars.ENABLE_SPECIAL_PROTOCOLS }}
 
+  # enable airport auto-registration (disabled by default to save time)
+  ENABLE_REGISTER: ${{ vars.ENABLE_REGISTER }}
+
+  # verification tuning
+  NUM_THREADS: ${{ vars.NUM_THREADS }}
+  PROBE_TIMEOUT: ${{ vars.PROBE_TIMEOUT }}
+  BREAKER_THRESHOLD: ${{ vars.BREAKER_THRESHOLD }}
+  TELEGRAM_PAGES: ${{ vars.TELEGRAM_PAGES }}
+
+  # persistent incremental cache directory (use a persisted volume on your runner)
+  AGGREGATOR_CACHE_DIR: ${{ vars.AGGREGATOR_CACHE_DIR }}
+
 jobs:
   process:
     runs-on: ubuntu-latest

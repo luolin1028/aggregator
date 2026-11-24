@@ -21,6 +21,7 @@ import utils
 import workflow
 import yaml
 from airport import AirPort
+from cache import get_cache
 from config.models import NodeInput, ProcessConfig, StorageItem
 from logger import logger
 from workflow import TaskConfig
@@ -101,14 +102,32 @@ def assign(
     only_check: bool = False,
     rigid: bool = True,
     special_protocols: bool | None = None,
+    enable_register: bool = False,
 ) -> tuple[list[TaskConfig], dict[str, list[int]]]:
     if not isinstance(pc, ProcessConfig) or not isinstance(pushtool, push.PushTo):
         return [], {}
 
     special_protocols = AirPort.enable_special_protocols(special_protocols)
 
+    sites = pc.sites
+    if not enable_register:
+        # 跳过仅靠「注册新账号」才能拿到订阅的站点，保留已有订阅/续期站点
+        filtered = [
+            site
+            for site in sites
+            if site.nodes.subscribe_list()
+            or site.nodes.uris
+            or site.nodes.proxies
+            or (site.renew and site.renew.accounts)
+        ]
+        if len(filtered) != len(sites):
+            logger.info(
+                f"airport auto-registration is disabled, skip {len(sites) - len(filtered)} registration-only site(s)"
+            )
+        sites = filtered
+
     tasks, groups = pipeline.assign_sites(
-        sites=pc.sites,
+        sites=sites,
         groups=pc.groups,
         retry=retry,
         bin_name=bin_name,
@@ -156,6 +175,8 @@ def aggregate(args: argparse.Namespace) -> None:
     display = not args.invisible
     retry = min(max(1, args.retry), 10)
 
+    get_cache().purge()
+
     # parse config
     server = utils.trim(args.server) or os.environ.get("SUBSCRIBE_CONF", "").strip()
     process_config = load_configs(
@@ -169,6 +190,8 @@ def aggregate(args: argparse.Namespace) -> None:
 
     pushtool = push.get_instance(process_config.storage)
 
+    enable_register = bool(args.enable_register or process_config.enable_register)
+
     # generate tasks
     tasks, groups = assign(
         pc=process_config,
@@ -179,6 +202,7 @@ def aggregate(args: argparse.Namespace) -> None:
         only_check=args.check,
         rigid=not args.flexible,
         special_protocols=args.special_protocols,
+        enable_register=enable_register,
     )
     if not tasks:
         logger.error("cannot found any valid config, exit")
@@ -230,6 +254,8 @@ def aggregate(args: argparse.Namespace) -> None:
             display=display,
             skip=args.skip_alive_check,
             group=k,
+            probe_timeout=args.probe_timeout,
+            breaker=args.breaker,
         )
 
         for item in nochecks:
@@ -306,12 +332,20 @@ def aggregate(args: argparse.Namespace) -> None:
                         logger.error(f"base64 encode error, group: {k}, target: {target}, message: {str(e)}")
                         continue
 
-                # save to remote server
-                persisted = pushtool.push_to(
-                    content=content,
-                    item=process_config.storage.items.get(storage_name, StorageItem()),
-                    group=f"{k}::{target}",
-                )
+                # save to remote server, skip when the content is unchanged
+                cache_key = f"{k}::{target}"
+                state = get_cache()
+                if content and state.upload_unchanged(cache_key, content):
+                    persisted = True
+                    logger.info(f"content unchanged, skip uploading, group: {k}, target: {target}")
+                else:
+                    persisted = pushtool.push_to(
+                        content=content,
+                        item=process_config.storage.items.get(storage_name, StorageItem()),
+                        group=cache_key,
+                    )
+                    if persisted:
+                        state.remember_upload(cache_key, content)
 
             # clean workspace
             workflow.cleanup(os.path.join(PATH, "subconverter"), [dest_file, "generate.ini"])
@@ -325,6 +359,8 @@ def aggregate(args: argparse.Namespace) -> None:
         workflow.cleanup(os.path.join(PATH, "subconverter"), [source_file])
         cost = "{:.2f}s".format(time.time() - starttime)
         logger.info(f"group [{k}] process finished, count: {len(nochecks)}, cost: {cost}")
+
+    get_cache().flush()
 
     workflow.refresh(
         config=process_config,
@@ -388,7 +424,7 @@ if __name__ == "__main__":
         "--num",
         type=int,
         required=False,
-        default=64,
+        default=utils.env_int("NUM_THREADS", 128),
         help="threads num for check proxy",
     )
 
@@ -438,6 +474,29 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         default=utils.env_bool("ENABLE_SPECIAL_PROTOCOLS", True),
         help="include special protocols such as vless and hysteria",
+    )
+
+    parser.add_argument(
+        "--enable-register",
+        action=argparse.BooleanOptionalAction,
+        default=utils.env_bool("ENABLE_REGISTER", False),
+        help="enable airport auto-registration (disabled by default, only existing subscriptions are used)",
+    )
+
+    parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        required=False,
+        default=utils.env_float("PROBE_TIMEOUT", 2.0),
+        help="tcp pre-check timeout in seconds",
+    )
+
+    parser.add_argument(
+        "--breaker",
+        type=int,
+        required=False,
+        default=utils.env_int("BREAKER_THRESHOLD", 8),
+        help="consecutive TCP failures before a source is skipped",
     )
 
     parser.add_argument(

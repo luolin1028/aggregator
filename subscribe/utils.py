@@ -375,6 +375,26 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.lower() in ["true", "1"]
 
 
+def env_int(name: str, default: int) -> int:
+    raw = trim(os.environ.get(name, ""))
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    raw = trim(os.environ.get(name, ""))
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def hide(url: str) -> str:
     # len('http://') equals 7
     if isblank(url) or len(url) < 7:
