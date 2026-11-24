@@ -70,8 +70,16 @@ def filter_proxies(proxies: list[dict[str, object]]) -> dict[str, object]:
         "rules": ["MATCH,🌐 Proxy"],
     }
 
-    # 按名字排序方便在节点相同时优先保留名字靠前的
-    proxies.sort(key=lambda p: str(p.get("name", "")))
+    # 按名字排序方便在节点相同时优先保留名字靠前的；同名的再按端点排序，
+    # 保证输入顺序变化时输出仍然稳定
+    proxies.sort(
+        key=lambda p: (
+            str(p.get("name", "")),
+            str(p.get("server", "")),
+            str(p.get("port", "")),
+            str(p.get("type", "")),
+        )
+    )
     unique_proxies, hosts = [], defaultdict(list)
 
     for item in proxies:

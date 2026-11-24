@@ -474,11 +474,13 @@ def aggregate(args: argparse.Namespace) -> None:
 
         logger.info(f"filter subscriptions finished, total: {total}, found: {len(urls)}, discard: {discard}")
 
+    # 去重并排序，保证相同订阅集合每次生成的内容一致
+    urls = sorted(set(urls))
     utils.write_file(filename=os.path.join(DATA_BASE, subscribes_file), lines=urls)
     domains = [utils.extract_domain(url=x, include_protocal=True) for x in urls]
 
     # 保存实际可使用的网站列表
-    utils.write_file(filename=os.path.join(DATA_BASE, "valid-domains.txt"), lines=list(set(domains)))
+    utils.write_file(filename=os.path.join(DATA_BASE, "valid-domains.txt"), lines=sorted(set(domains)))
 
     # 如有必要，上传至 Gist
     if gist_id and access_token:
