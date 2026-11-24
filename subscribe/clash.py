@@ -113,13 +113,14 @@ def filter_proxies(proxies: list[dict[str, object]]) -> dict[str, object]:
             proxies.append(item)
             unique_names.add(name)
 
-    # shuffle
-    for _ in range(3):
-        random.shuffle(proxies)
+    # deterministic order: identical results must produce identical output so
+    # that the upload hash can detect no-op runs
+    proxies.sort(key=lambda item: str(item.get("name", "")))
+    names = sorted(name for name in unique_names if name)
 
     config["proxies"] += proxies
-    config["proxy-groups"][0]["proxies"] += list(unique_names)
-    config["proxy-groups"][1]["proxies"] += list(unique_names)
+    config["proxy-groups"][0]["proxies"] += names
+    config["proxy-groups"][1]["proxies"] += names
 
     return config
 
