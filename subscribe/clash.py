@@ -78,6 +78,7 @@ def filter_proxies(proxies: list[dict[str, object]]) -> dict[str, object]:
             str(p.get("server", "")),
             str(p.get("port", "")),
             str(p.get("type", "")),
+            json.dumps(p, sort_keys=True, ensure_ascii=False, default=str),
         )
     )
     unique_proxies, hosts = [], defaultdict(list)
