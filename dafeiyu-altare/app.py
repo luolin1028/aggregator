@@ -1,15 +1,11 @@
-# AstrBot entrypoint for the Pterodactyl / Nodaroo Python egg (v2).
-# The egg's own pip runs with a tiny /tmp; this script installs AstrBot with
-# TMPDIR pointed at the server volume instead.
+# AstrBot entrypoint v3 for the Pterodactyl / Nodaroo Python egg.
+# One file, no requirements.txt, no docstring: safe to upload as-is.
 import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-if sys.version_info < (3, 12):
-    raise SystemExit("AstrBot 4.29 needs Python >= 3.12")
 
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
@@ -28,24 +24,15 @@ def add_paths():
             sys.path.insert(0, str(p))
 
 
-def show_disk(path):
-    total, used, free = shutil.disk_usage(path)
-    print(f"[dafeiyu] {path}: total={total / 2**30:.2f}G free={free / 2**30:.2f}G", flush=True)
+print("[dafeiyu] app.py v3", flush=True)
+add_paths()
 
-
-def ensure_astrbot():
-    add_paths()
-    try:
-        import astrbot  # noqa: F401
-
-        return
-    except ModuleNotFoundError:
-        pass
+try:
+    import astrbot  # noqa: F401
+except ModuleNotFoundError:
     tmp = ROOT / ".tmp"
     tmp.mkdir(exist_ok=True)
-    env = os.environ.copy()
-    env["TMPDIR"] = str(tmp)
-    env["PIP_NO_CACHE_DIR"] = "1"
+    env = dict(os.environ, TMPDIR=str(tmp), PIP_NO_CACHE_DIR="1")
     print(f"[dafeiyu] installing astrbot, TMPDIR={tmp}", flush=True)
     rc = subprocess.call(
         [
@@ -53,12 +40,10 @@ def ensure_astrbot():
             "-m",
             "pip",
             "install",
-            "-U",
             "--no-cache-dir",
             "--prefix",
             str(ROOT / ".local"),
-            "-r",
-            str(ROOT / "requirements.txt"),
+            "astrbot==4.29.4",
         ],
         env=env,
     )
@@ -67,21 +52,18 @@ def ensure_astrbot():
         raise SystemExit("[dafeiyu] pip install failed, see the log above")
     add_paths()
 
-
 for d in ("data", "data/config", "data/plugins", "data/temp"):
     (ROOT / d).mkdir(parents=True, exist_ok=True)
 
-print("[dafeiyu] app.py v2", flush=True)
 for p in ("/tmp", str(ROOT)):
     try:
-        show_disk(p)
+        total, used, free = shutil.disk_usage(p)
+        print(f"[dafeiyu] {p}: total={total / 2**30:.2f}G free={free / 2**30:.2f}G", flush=True)
     except OSError as exc:
         print(f"[dafeiyu] {p}: {exc}", flush=True)
 
-ensure_astrbot()
-
 port = os.environ.get("SERVER_PORT") or os.environ.get("PORT") or "6185"
-os.environ["DASHBOARD_PORT"] = str(port)
+os.environ["DASHBOARD_PORT"] = port
 print(f"[dafeiyu] starting AstrBot WebUI on 0.0.0.0:{port}", flush=True)
 
 sys.argv = ["astrbot", "run", "--port", str(port)]
