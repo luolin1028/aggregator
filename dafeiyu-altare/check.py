@@ -11,11 +11,12 @@ import subprocess
 ROOT = "/home/container"
 G = 1024**3
 
-total, used, free = shutil.disk_usage(ROOT)
-print(
-    f"[check] disk total={total / G:.2f}GiB used={used / G:.2f}GiB free={free / G:.2f}GiB",
-    flush=True,
-)
+for target in (ROOT, "/tmp"):
+    total, used, free = shutil.disk_usage(target)
+    print(
+        f"[check] {target} total={total / G:.2f}GiB used={used / G:.2f}GiB free={free / G:.2f}GiB",
+        flush=True,
+    )
 print(
     f"[check] HOME={os.environ.get('HOME')} SERVER_PORT={os.environ.get('SERVER_PORT')}",
     flush=True,
