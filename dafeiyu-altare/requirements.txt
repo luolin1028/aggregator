@@ -1,2 +1,1 @@
-# AstrBot core (requires Python >= 3.12)
 astrbot==4.29.4
